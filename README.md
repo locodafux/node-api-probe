@@ -1,58 +1,101 @@
 # Node API Probe
 
-A planned starter API for a browser-based web app. The first version will focus on authentication, a small protected resource API, and interactive OpenAPI documentation.
+A browser-facing Node.js API starter with email/password authentication, PostgreSQL-backed sessions, a user-owned CRUD resource, and OpenAPI documentation.
 
-> **Status:** planning. The API has not been implemented yet.
+## Stack
 
-## Proposed stack
-
-- Node.js on a supported LTS release
+- Node.js 22 or newer
 - Fastify with TypeScript
-- PostgreSQL for persistent users, sessions, and resource data
-- OpenAPI generated from route schemas, served through Swagger UI
+- PostgreSQL
+- OpenAPI 3.0 generated from Fastify route schemas
+- Swagger UI at `/docs` in development
 
-## API outline
+## Run locally
+
+Requirements: Node.js and Docker Compose.
+
+```sh
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Copy the generated value into `SESSION_SECRET` in `.env`, then start PostgreSQL and the API:
+
+```sh
+docker compose up -d db
+npm install
+npm run db:migrate
+npm run dev
+```
+
+The API listens on `http://localhost:3000`. Open `http://localhost:3000/docs` for interactive documentation. Swagger UI is disabled when `NODE_ENV=production`.
+
+For a web app on another local origin, set `WEB_ORIGIN` in `.env` to that exact origin, such as `http://localhost:5173`. Browser requests must use `credentials: 'include'`. Same-origin deployment is simpler; this starter does not support cross-site cookies.
+
+## Routes
 
 | Method | Route | Access | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/health` | Public | Check that the API is running |
-| `POST` | `/api/v1/auth/register` | Public | Create an account, if public sign-up is enabled |
-| `POST` | `/api/v1/auth/login` | Public | Start a user session |
-| `POST` | `/api/v1/auth/logout` | Signed in | End the current session |
-| `GET` | `/api/v1/me` | Signed in | Return the current user |
+| `GET` | `/health` | Public | Check API availability |
+| `GET` | `/api/v1/auth/csrf` | Public | Get a token for a browser state-changing request |
+| `POST` | `/api/v1/auth/register` | Public + CSRF token | Create an account and start a session |
+| `POST` | `/api/v1/auth/login` | Public + CSRF token | Sign in and start a session |
+| `POST` | `/api/v1/auth/logout` | Signed in + CSRF token | End the session |
+| `GET` | `/api/v1/me` | Signed in | Get the current user |
 | `GET` | `/api/v1/items` | Signed in | List the current user's items |
-| `POST` | `/api/v1/items` | Signed in | Create an item for the current user |
+| `POST` | `/api/v1/items` | Signed in + CSRF token | Create an item |
 | `GET` | `/api/v1/items/:id` | Signed in | Get one of the current user's items |
-| `PATCH` | `/api/v1/items/:id` | Signed in | Update one of the current user's items |
-| `DELETE` | `/api/v1/items/:id` | Signed in | Delete one of the current user's items |
+| `PATCH` | `/api/v1/items/:id` | Signed in + CSRF token | Update one of the current user's items |
+| `DELETE` | `/api/v1/items/:id` | Signed in + CSRF token | Delete one of the current user's items |
 
-`items` is a placeholder resource and can be replaced with the web app's real domain model.
+`items` is an example resource. Replace it with the web app's real domain model when that is known.
 
-## Authentication and security
+## Browser authentication
 
-- Use an opaque session ID in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie, with session state stored server-side.
-- Rotate the session after login and invalidate it on logout.
-- Protect state-changing requests against CSRF; `SameSite` is defense in depth, not the only CSRF control.
-- If passwords are stored locally, hash them with Argon2id. Rate-limit sign-in attempts.
-- Check ownership and authorization for every protected resource operation.
-- Validate request and response shapes. Do not return stack traces or log passwords, cookies, or session IDs.
-- Serve the web app and API from the same origin when practical. If cross-origin access is needed, allow only the web app's exact origin.
+Sessions use an opaque cookie with `HttpOnly`, `Secure` in production, and `SameSite=Lax` attributes. Session data is stored in PostgreSQL. Passwords are hashed with Argon2id; passwords must be 15–128 characters. Login and registration are rate-limited.
 
-## API documentation
+Get a CSRF token before registration or login, then use the token returned by those endpoints for later writes:
 
-Use Fastify's `@fastify/swagger` and `@fastify/swagger-ui` plugins. Define validation and response schemas with routes so the API behavior and OpenAPI documentation stay aligned. Keep the interactive docs available in development; restrict or disable them in production if they should not be public.
+```js
+const csrfResponse = await fetch('http://localhost:3000/api/v1/auth/csrf', {
+  credentials: 'include',
+});
+const { csrfToken } = await csrfResponse.json();
 
-## Implementation order
+const response = await fetch('http://localhost:3000/api/v1/auth/register', {
+  method: 'POST',
+  credentials: 'include',
+  headers: {
+    'content-type': 'application/json',
+    'x-csrf-token': csrfToken,
+  },
+  body: JSON.stringify({ email: 'you@example.com', password: 'a-long-passphrase' }),
+});
+const { user, csrfToken: nextCsrfToken } = await response.json();
+```
 
-1. Create the Fastify and TypeScript app, validate configuration at startup, connect PostgreSQL, and add `/health`.
-2. Add account and session handling, login, logout, and `/me`.
-3. Add the protected resource routes with per-user ownership checks.
-4. Add OpenAPI and Swagger UI, then review the docs against the route schemas.
+Use `nextCsrfToken` in the `x-csrf-token` header for `POST`, `PATCH`, and `DELETE` requests. Fetch a new token after login or logout. Authenticated responses use `Cache-Control: no-store`.
+
+## Production notes
+
+- Set `NODE_ENV=production`, use HTTPS, and supply a strong `SESSION_SECRET` through a secret manager.
+- The production session cookie is named `__Host-session` and has no `Domain` attribute.
+- `WEB_ORIGIN` is an exact CORS allowlist entry. Leave it unset for same-origin deployments.
+- Only set `TRUST_PROXY=true` when requests can reach the API only through a trusted reverse proxy.
+- The built-in rate limiter uses in-memory state; use a shared store before running multiple API instances.
+- This starter does not include email verification, password reset, or multi-factor authentication.
+
+## Build and start
+
+```sh
+npm run build
+npm start
+```
 
 ## References
 
-- [Fastify ecosystem plugins](https://fastify.dev/docs/latest/Guides/Ecosystem/)
+- [Fastify](https://fastify.dev/docs/latest/)
 - [OpenAPI Specification](https://spec.openapis.org/oas/)
-- [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
-- [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
-- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- [OWASP Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+- [OWASP CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+- [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)

@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: api_probe
+      POSTGRES_USER: api_probe
+      POSTGRES_PASSWORD: api_probe_dev_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - api_probe_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api_probe -d api_probe"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  api_probe_data:
